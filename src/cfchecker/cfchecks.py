@@ -53,6 +53,7 @@ udunits=CDLL("libudunits2.so")
  
 STANDARDNAME = 'http://cfconventions.org/Data/cf-standard-names/current/src/cf-standard-name-table.xml'
 AREATYPES = 'http://cfconventions.org/Data/area-type-table/current/src/area-type-table.xml'
+REGIONNAMES = '/home/ros/bin/region-name-table.xml'
 
 #-----------------------------------------------------------
 from xml.sax import ContentHandler
@@ -286,13 +287,14 @@ def chkDerivedName(name):
 #======================
 class CFChecker:
     
-  def __init__(self, uploader=None, useFileName="yes", badc=None, coards=None, cfStandardNamesXML=None, cfAreaTypesXML=None, udunitsDat=None, version=newest_version):
+  def __init__(self, uploader=None, useFileName="yes", badc=None, coards=None, cfStandardNamesXML=None, cfAreaTypesXML=None, cfRegionNamesXML=None, udunitsDat=None, version=newest_version):
       self.uploader = uploader
       self.useFileName = useFileName
       self.badc = badc
       self.coards = coards
       self.standardNames = cfStandardNamesXML
       self.areaTypes = cfAreaTypesXML
+      self.regionNames = cfRegionNamesXML
       self.udunits = udunitsDat
       self.version = version
       self.err = 0
@@ -379,6 +381,12 @@ class CFChecker:
         parser.setContentHandler(self.area_type_lh)
         parser.parse(self.areaTypes)
     
+    # Set up list of valid region names
+    self.region_lh = ConstructList()
+    parser.setContentHandler(self.region_lh)
+    parser.parse(self.regionNames)
+
+
     print "Using CF Checker Version",__version__
 
     if not self.version:
@@ -390,8 +398,10 @@ class CFChecker:
 
     if self.version >= vn1_4:
         print "Using Area Type Table Version "+self.area_type_lh.version_number+" ("+self.area_type_lh.last_modified+")"
-    print ""
     
+    print "Using Region Name Table Version "+self.region_lh.version_number+" ("+self.region_lh.last_modified+")"
+    print ""
+
     # Read in netCDF file
     try:
         self.f=cdms.open(file,"r")
@@ -2210,7 +2220,10 @@ class CFChecker:
   def chkDescription(self, varName):
   #----------------------------------
       """Check 1) standard_name & long_name attributes are present
-               2) for a valid standard_name as listed in the standard name table."""
+               2) for a valid standard_name as listed in the standard name table.
+               3) if standard_name is either area_type or region the variable's 
+                  value(s) must be from the permitted list.
+      """
       rc=1
       var=self.f[varName]
 
@@ -2248,11 +2261,29 @@ class CFChecker:
                       self.err = self.err + 1
                       rc=0
 
+              if name in ['region','area_type']:
+                  # For region and area_type check variable has value(s) from the appropriate permitted list
+                  permitted_lh = name+"_lh"
+                  values = var.getValue()
+
+                  # Kludge to make a 1 element list into an array containing one list so
+                  # the next for loop works!
+                  if var.shape[0] == 1:
+                      values=[values[:]]
+
+                  for val in values[:]:
+                      str1 = ''.join(str(e) for e in val)
+                      if str1 not in getattr(self, permitted_lh).list:
+                          print "ERROR (3.3): Invalid " + name + ": "+ str1
+                          self.err = self.err + 1
+                          rc=0
+                      
               if len(std_name_el) == 2:
                   # Validate modifier
                   modifier=std_name_el[1]
                   if not modifier in ['detection_minimum','number_of_observations','standard_error','status_flag']:
                       print "ERROR (3.3): Invalid standard_name modifier: "+modifier
+                      self.err = self.err + 1
                       rc=0
                       
       return rc
@@ -2563,10 +2594,12 @@ def getargs(arglist):
     udunitskey='UDUNITS'
     standardnamekey='CF_STANDARD_NAMES'
     areatypeskey='CF_AREA_TYPES'
+    regionnameskey='CF_REGION_NAMES'
     # set defaults
     udunits=None
     standardname=STANDARDNAME
     areatypes=AREATYPES
+    regionnames=REGIONNAMES
     uploader=None
     useFileName="yes"
     badc=None
@@ -2580,9 +2613,11 @@ def getargs(arglist):
         standardname=environ[standardnamekey]
     if environ.has_key(areatypeskey):
         areatypes=environ[areatypeskey]
+    if environ.has_key(regionnameskey):
+        regionnames=environ[regionnameskey]
 
     try:
-        (opts,args)=getopt(arglist[1:],'a:bchlnu:s:v:',['area_types=','badc','coards','help','uploader','noname','udunits=','cf_standard_names=','version='])
+        (opts,args)=getopt(arglist[1:],'a:bchlnr:u:s:v:',['area_types=','badc','coards','help','uploader','noname','region_names=','udunits=','cf_standard_names=','version='])
     except GetoptError:
         stderr.write('%s\n'%__doc__)
         exit(1)
@@ -2605,6 +2640,9 @@ def getargs(arglist):
             continue
         if a in ('-n','--noname'):
             useFileName="no"
+            continue
+        if a in ('-r','--region_names'):
+            regionnames=v.strip()
             continue
         if a in ('-u','--udunits'):
             udunits=v.strip()
@@ -2631,7 +2669,7 @@ def getargs(arglist):
         stderr.write('ERROR in command line\n\nusage:\n%s\n'%__doc__)
         exit(1)
 
-    return (badc,coards,uploader,useFileName,standardname,areatypes,udunits,version,args)
+    return (badc,coards,uploader,useFileName,standardname,areatypes,regionnames,udunits,version,args)
 
 
 #--------------------------
@@ -2642,9 +2680,9 @@ if __name__ == '__main__':
 
     from sys import argv,exit
 
-    (badc,coards,uploader,useFileName,standardName,areaTypes,udunitsDat,version,files)=getargs(argv)
+    (badc,coards,uploader,useFileName,standardName,areaTypes,regionNames,udunitsDat,version,files)=getargs(argv)
     
-    inst = CFChecker(uploader=uploader, useFileName=useFileName, badc=badc, coards=coards, cfStandardNamesXML=standardName, cfAreaTypesXML=areaTypes, udunitsDat=udunitsDat, version=version)
+    inst = CFChecker(uploader=uploader, useFileName=useFileName, badc=badc, coards=coards, cfStandardNamesXML=standardName, cfAreaTypesXML=areaTypes, cfRegionNamesXML=regionNames, udunitsDat=udunitsDat, version=version)
     for file in files:
         rc = inst.checker(file)
         exit (rc)
